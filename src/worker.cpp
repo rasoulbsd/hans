@@ -34,7 +34,7 @@
 using std::cout;
 using std::endl;
 
-const int Worker::RECV_BATCH_MAX = 32;
+const int Worker::RECV_BATCH_MAX = RECV_BATCH_MAX;
 
 Worker::TunnelHeader::Magic::Magic(const char *magic)
 {

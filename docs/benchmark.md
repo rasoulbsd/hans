@@ -69,9 +69,11 @@ sudo tc qdisc del dev eth0 root
 
 The tunnel is **one logical pipe** per client: the server has a single FIFO queue of packets to that client and sends **one packet per POLL reply**. With **8 parallel streams** (`-P 8`), all streams share that one queue. The kernel delivers segments from all TCP connections into the TUN; one connection often gets many segments in a row. So one stream’s packets can sit at the front of the queue and get most of the send slots, while others get almost none → you see one stream at ~40–50 Mbits/sec and several at 0 KB/s.
 
-**What to do:**
+**What we do:** The default **recv batch size is 1** (one ICMP packet per `select()`), matching original hans / petrich/hans. That keeps processing interleaved across flows and avoids extreme 0 KB/s and “control socket has closed unexpectedly”. If you build with `RECV_BATCH_MAX=32` in `config.h` (or `-DRECV_BATCH_MAX=32`), throughput can increase but fairness drops and you may see 0 KB/s and iperf3 control-socket timeouts again.
 
-- Use **fewer parallel streams**: `iperf3 -c 10.0.0.100 -t 30 -P 2` or `-P 4` for more even distribution and fewer 0 KB/s intervals.
+**What you can do:**
+
+- Use **fewer parallel streams**: `iperf3 -c 10.0.0.100 -t 30 -P 2` or `-P 4` for more even distribution.
 - Or a **single flow**: `iperf3 -c 10.0.0.100 -t 30` (no `-P`) for one stream and predictable throughput.
 
 Total bandwidth (SUM) is similar; with -P 2 or -P 4 the per-stream rates are less extreme.

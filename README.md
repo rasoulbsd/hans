@@ -83,12 +83,26 @@ hans -c server.example.com -6 -p mypass -f -d tun1
 ## IPv4 and IPv6
 
 - **IPv4 (default):** Client uses `-c SERVER_IP` (no `-6`). Server listens on IPv4; tunnel works over ICMP (IPv4).
-- **IPv6:** Client uses `-6` and server’s IPv6 address or hostname: `hans -c 2001:db8::1 -6 -p mypass -f -d tun1`. Server is dual-stack and accepts both IPv4 and IPv6 clients; tunnel payload is still IPv4.
+- **IPv6:** Client uses `-6` and the server’s IPv6 address or hostname. The **control channel** (POLLs, DATA) then uses ICMPv6; the **tunnel payload** is still IPv4 (10.0.0.0/24). Server is dual-stack and accepts both IPv4 and IPv6 clients.
 
-**Testing:**
+**How to test IPv6**
 
-- **IPv4 only:** Start server and client without `-6`. Ping over the tunnel (e.g. client gets 10.0.0.100).
-- **IPv6 only:** Start server; start client with `-6 -c <server_ipv6>`. Ping over the tunnel the same way. See [docs/docker.md](docs/docker.md#testing-ipv4-vs-ipv6) for Docker IPv6 examples.
+1. **Prerequisites:** Server host has a routable IPv6 address; ICMPv6 is allowed between client and server (firewall / security group).
+2. **Native:** Start server as usual. Start client with `-6` and server IPv6 or hostname (with AAAA):
+   ```bash
+   hans -c 2001:db8::1 -6 -p mypass -f -d tun1
+   # or: hans -c server.example.com -6 -p mypass -f -d tun1
+   ```
+3. **Docker:** Compose does not pass `-6` by default. Run the client with plain `docker run` and `-6`:
+   ```bash
+   docker run -d --name hans-client \
+     --cap-add=NET_RAW --cap-add=NET_ADMIN \
+     --device=/dev/net/tun --network=host \
+     hans:latest -c SERVER_IPV6 -6 -p YOUR_PASSPHRASE -f -d tun1
+   ```
+4. **Verify:** Same as IPv4 — ping and iperf3 over the tunnel (e.g. `ping 10.0.0.100`, `iperf3 -c 10.0.0.100`). Tunnel addresses stay IPv4.
+
+More: [docs/docker.md](docs/docker.md#testing-ipv4-vs-ipv6).
 
 For **VPN / many users**: fairness and bandwidth are both important. See [docs/fairness-and-bandwidth.md](docs/fairness-and-bandwidth.md) for why throughput is limited (~137 Mbits/sec vs 1.6 Gbit/s), per-flow fairness (round-robin), tuning (`-w`/`-W`), and multiplexing/QUIC/KCP.
 
@@ -132,9 +146,8 @@ Containers need `NET_RAW`, `NET_ADMIN`, `--device=/dev/net/tun`, and `--network=
 
 ## IPv6 support
 
-- **Client:** Use `-6` to connect to the server via IPv6 (AAAA). Example: `hans -c server.example.com -6 -p passphrase -f`
-- **Server:** Listens on both IPv4 and IPv6 by default; accepts clients from either. Tunnel payload is still IPv4 (TUN device carries IPv4).
-- **Dual-stack:** Without `-6`, the client uses IPv4 (A record). With `-6`, the client uses IPv6 only.
+- **Client:** Use `-6` to connect to the server via IPv6 (ICMPv6). Server can be specified by IPv6 address or hostname (AAAA). Without `-6`, the client uses IPv4 (A record).
+- **Server:** Listens on both IPv4 and IPv6 by default; accepts clients from either. Tunnel payload is still IPv4 (TUN device carries IPv4). On environments where the kernel does not support `IPV6_CHECKSUM` (e.g. some WSL/Docker setups), hans uses a userspace ICMPv6 checksum.
 
 ## Troubleshooting packet loss
 

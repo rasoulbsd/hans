@@ -1,6 +1,9 @@
-LDFLAGS = `sh osflags ld $(MODE)` -lssl -lcrypto $(LDFLAGS)
+# Capture env at parse time so we can append without recursion
+ENV_CPPFLAGS := $(CPPFLAGS)
+ENV_LDFLAGS := $(LDFLAGS)
+LDFLAGS = `sh osflags ld $(MODE)` -lssl -lcrypto $(ENV_LDFLAGS)
 CFLAGS = -c -g `sh osflags c $(MODE)`
-CPPFLAGS = -c -g -std=c++98 -pedantic -Wall -Wextra -Wno-sign-compare -Wno-missing-field-initializers `sh osflags c $(MODE)` $(CPPFLAGS)
+CPPFLAGS = -c -g -std=c++98 -pedantic -Wall -Wextra -Wno-sign-compare -Wno-missing-field-initializers `sh osflags c $(MODE)` $(ENV_CPPFLAGS)
 TUN_DEV_FILE = `sh osflags dev $(MODE)`
 GCC = gcc
 GPP = g++

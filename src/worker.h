@@ -22,20 +22,28 @@
 
 #include "time.h"
 #include "echo.h"
+#include "echo6.h"
 #include "tun.h"
+#include "stats.h"
+#include "pacer.h"
 
 #include <string>
 #include <sys/types.h>
+#include <netinet/in.h>
 
 class Worker
 {
 public:
     Worker(int tunnelMtu, const std::string *deviceName, bool answerEcho,
-           uid_t uid, gid_t gid);
-    virtual ~Worker() { }
+           uid_t uid, gid_t gid,
+           int recvBufSize = 256 * 1024, int sndBufSize = 256 * 1024,
+           int rateKbps = 0,
+           bool useIPv4 = true, bool useIPv6 = false);
+    virtual ~Worker();
 
     virtual void run();
     virtual void stop();
+    void dumpStats() const { stats.dumpToSyslog(); }
 
     static int headerSize() { return sizeof(TunnelHeader); }
 
@@ -63,7 +71,9 @@ protected:
             TYPE_CHALLENGE_ERROR = 6,
             TYPE_DATA = 7,
             TYPE_POLL = 8,
-            TYPE_SERVER_FULL = 9
+            TYPE_SERVER_FULL = 9,
+            TYPE_DATA_SEQ = 10,
+            TYPE_NACK = 11
         };
 
         Magic magic;
@@ -72,25 +82,34 @@ protected:
 
     virtual bool handleEchoData(const TunnelHeader &header, int dataLength,
                                 uint32_t realIp, bool reply, uint16_t id, uint16_t seq);
+    virtual bool handleEchoData6(const TunnelHeader &header, int dataLength,
+                                 const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq);
     virtual void handleTunData(int dataLength, uint32_t sourceIp,
                                uint32_t destIp); // to echoSendPayloadBuffer
     virtual void handleTimeout();
 
-    void sendEcho(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
+    bool sendEcho(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
                   int length, uint32_t realIp, bool reply, uint16_t id, uint16_t seq);
+    bool sendEcho6(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
+                  int length, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq);
     void sendToTun(int length); // from echoReceivePayloadBuffer
 
     void setTimeout(Time delta);
 
     char *echoSendPayloadBuffer();
+    char *echoSendPayloadBuffer6();
     char *echoReceivePayloadBuffer();
 
     int payloadBufferSize() { return tunnelMtu; }
 
     void dropPrivileges();
 
-    Echo echo;
+    Echo *echo;
+    Echo6 *echo6;
+    bool currentRecvFrom6;
     Tun tun;
+    Stats stats;
+    Pacer pacer;
     bool alive;
     bool answerEcho;
     int tunnelMtu;
@@ -101,9 +120,9 @@ protected:
     bool privilegesDropped;
 
     Time now;
-private:
-    int readIcmpData(int *realIp, int *id, int *seq);
+    static const int RECV_BATCH_MAX;
 
+private:
     Time nextTimeout;
 };
 

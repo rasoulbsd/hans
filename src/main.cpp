@@ -31,6 +31,7 @@
 // #include <uuid/uuid.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
 #include <syslog.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -57,6 +58,12 @@ static void sig_int_handler(int)
     syslog(LOG_INFO, "SIGINT received");
     if (worker)
         worker->stop();
+}
+
+static void sig_usr1_handler(int)
+{
+    if (worker)
+        worker->dumpStats();
 }
 
 static void usage()
@@ -88,8 +95,13 @@ static void usage()
         "                routers. May impact performance with others.\n"
         "  -q            Change echo sequence number on every echo request. May help with\n"
         "                buggy routers. May impact performance with others.\n"
+        "  -B buf        Socket buffer sizes: recv,snd in bytes (e.g. 262144,262144).\n"
+        "  -R rate       Pacing: max send rate in Kbps (0 = disabled).\n"
+        "  -W packets   Max buffered packets per client (server only). Default 20.\n"
+        "  -6            Use IPv6 (client only). Connect to server via AAAA.\n"
         "  -f            Run in foreground.\n"
-        "  -v            Print debug information.\n";
+        "  -v            Print debug information.\n"
+        "  SIGUSR1       Dump packet stats to syslog.\n";
 }
 
 int main(int argc, char *argv[])
@@ -111,11 +123,16 @@ int main(int argc, char *argv[])
     bool changeEchoId = false;
     bool changeEchoSeq = false;
     bool verbose = false;
+    int recvBufSize = 256 * 1024;
+    int sndBufSize = 256 * 1024;
+    int rateKbps = 0;
+    int maxBufferedPackets = 20;
+    bool useIPv6 = false;
 
     openlog(argv[0], LOG_PERROR, LOG_DAEMON);
 
     int c;
-    while ((c = getopt(argc, argv, "fru:d:p:s:c:m:w:qiva:")) != -1)
+    while ((c = getopt(argc, argv, "fru:d:p:s:c:m:w:qiva:B:R:W:6")) != -1)
     {
         switch(c) {
             case 'f':
@@ -161,6 +178,28 @@ int main(int argc, char *argv[])
                 break;
             case 'a':
                 clientIp = ntohl(inet_addr(optarg));
+                break;
+            case 'B': {
+                int r = 256 * 1024, s = 256 * 1024;
+                if (sscanf(optarg, "%d,%d", &r, &s) >= 1)
+                {
+                    recvBufSize = r > 0 ? r : recvBufSize;
+                    sndBufSize = s > 0 ? s : sndBufSize;
+                }
+                break;
+            }
+            case 'R':
+                rateKbps = atoi(optarg);
+                if (rateKbps < 0)
+                    rateKbps = 0;
+                break;
+            case 'W':
+                maxBufferedPackets = atoi(optarg);
+                if (maxBufferedPackets < 1)
+                    maxBufferedPackets = 20;
+                break;
+            case '6':
+                useIPv6 = true;
                 break;
             default:
                 usage();
@@ -212,36 +251,68 @@ int main(int argc, char *argv[])
 
     signal(SIGTERM, sig_term_handler);
     signal(SIGINT, sig_int_handler);
+#ifndef WIN32
+    signal(SIGUSR1, sig_usr1_handler);
+#endif
 
     try
     {
         if (isServer)
         {
             worker = new Server(mtu, device.empty() ? NULL : &device, passphrase,
-                                network, answerPing, uid, gid, 5000);
+                                network, answerPing, uid, gid, 5000,
+                                maxBufferedPackets, recvBufSize, sndBufSize, rateKbps);
         }
         else
         {
             struct addrinfo hints = {0};
             struct addrinfo *res = NULL;
+            uint32_t serverIp = 0;
+            struct in6_addr serverIp6;
+            memset(&serverIp6, 0, sizeof(serverIp6));
 
-            hints.ai_family = AF_INET;
-            hints.ai_flags = AI_V4MAPPED | AI_ADDRCONFIG;
-
-            int err = getaddrinfo(serverName.data(), NULL, &hints, &res);
-            if (err)
+            if (useIPv6)
             {
-                syslog(LOG_ERR, "getaddrinfo: %s", gai_strerror(err));
-                return 1;
+                hints.ai_family = AF_INET6;
+                hints.ai_flags = AI_V4MAPPED | AI_ADDRCONFIG;
+                int err = getaddrinfo(serverName.data(), NULL, &hints, &res);
+                if (err)
+                {
+                    syslog(LOG_ERR, "getaddrinfo IPv6: %s", gai_strerror(err));
+                    return 1;
+                }
+                if (res->ai_family == AF_INET6)
+                    serverIp6 = reinterpret_cast<sockaddr_in6 *>(res->ai_addr)->sin6_addr;
+                else
+                {
+                    syslog(LOG_ERR, "no IPv6 address for %s", serverName.data());
+                    freeaddrinfo(res);
+                    return 1;
+                }
+                worker = new Client(mtu, device.empty() ? NULL : &device,
+                                    0, maxPolls, passphrase, uid, gid,
+                                    changeEchoId, changeEchoSeq, clientIp,
+                                    recvBufSize, sndBufSize, rateKbps,
+                                    true, &serverIp6);
             }
-
-            sockaddr_in *sockaddr = reinterpret_cast<sockaddr_in *>(res->ai_addr);
-            uint32_t serverIp = sockaddr->sin_addr.s_addr;
-
-            worker = new Client(mtu, device.empty() ? NULL : &device,
-                                ntohl(serverIp), maxPolls, passphrase, uid, gid,
-                                changeEchoId, changeEchoSeq, clientIp);
-
+            else
+            {
+                hints.ai_family = AF_INET;
+                hints.ai_flags = AI_V4MAPPED | AI_ADDRCONFIG;
+                int err = getaddrinfo(serverName.data(), NULL, &hints, &res);
+                if (err)
+                {
+                    syslog(LOG_ERR, "getaddrinfo: %s", gai_strerror(err));
+                    return 1;
+                }
+                sockaddr_in *sockaddr = reinterpret_cast<sockaddr_in *>(res->ai_addr);
+                serverIp = sockaddr->sin_addr.s_addr;
+                worker = new Client(mtu, device.empty() ? NULL : &device,
+                                    ntohl(serverIp), maxPolls, passphrase, uid, gid,
+                                    changeEchoId, changeEchoSeq, clientIp,
+                                    recvBufSize, sndBufSize, rateKbps,
+                                    false, NULL);
+            }
             freeaddrinfo(res);
         }
 

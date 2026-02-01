@@ -40,6 +40,8 @@ public:
 
     Challenge generateChallenge(int length) const;
     Response getResponse(const Challenge &challenge) const;
+    Challenge getResponseHMAC(const Challenge &challenge) const;
+    bool verifyChallengeResponseHMAC(const Challenge &challenge, const char *response, size_t responseLen) const;
 
 protected:
     std::string passphrase;

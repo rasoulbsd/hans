@@ -24,5 +24,10 @@
 
 #define CHALLENGE_SIZE 20
 
+#define SEQUENCE_ENABLED 0
+#define SEND_BUF_SIZE 64
+
+#define NUM_CHANNELS 1
+
 // #define DEBUG_ONLY(a) a
 #define DEBUG_ONLY(a)

@@ -24,6 +24,7 @@
 #include "auth.h"
 
 #include <vector>
+#include <netinet/in.h>
 
 class Client : public Worker
 {
@@ -31,7 +32,9 @@ class Client : public Worker
 public:
     Client(int tunnelMtu, const std::string *deviceName, uint32_t serverIp,
            int maxPolls, const std::string &passphrase, uid_t uid, gid_t gid,
-           bool changeEchoId, bool changeEchoSeq, uint32_t desiredIp);
+           bool changeEchoId, bool changeEchoSeq, uint32_t desiredIp,
+           int recvBufSize = 256 * 1024, int sndBufSize = 256 * 1024, int rateKbps = 0,
+           bool useIPv6 = false, const struct in6_addr *serverIp6 = NULL);
     virtual ~Client();
 
     virtual void run();
@@ -47,6 +50,7 @@ protected:
     };
 
     virtual bool handleEchoData(const TunnelHeader &header, int dataLength, uint32_t realIp, bool reply, uint16_t id, uint16_t seq);
+    virtual bool handleEchoData6(const Worker::TunnelHeader &header, int dataLength, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq);
     virtual void handleTunData(int dataLength, uint32_t sourceIp, uint32_t destIp);
     virtual void handleTimeout();
 
@@ -61,6 +65,9 @@ protected:
     Auth auth;
 
     uint32_t serverIp;
+    bool isIPv6;
+    struct in6_addr serverIp6;
+    bool useHmac;
     uint32_t clientIp;
     uint32_t desiredIp;
 

@@ -1,0 +1,15 @@
+# Build
+build/
+hans
+*.o
+
+# Python / setup
+.env
+*.pyc
+__pycache__/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

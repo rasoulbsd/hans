@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  hans-server:
+    build: .
+    image: hans:latest
+    container_name: hans-server
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    network_mode: host
+    # Server: -s network -p passphrase -f (foreground)
+    command: ["-s", "${HANS_NETWORK:-10.0.0.0}", "-p", "${HANS_PASSPHRASE:-passphrase}", "-f", "-d", "tun0"]
+    environment:
+      - HANS_PASSPHRASE=${HANS_PASSPHRASE:-passphrase}
+      - HANS_NETWORK=${HANS_NETWORK:-10.0.0.0}
+    # Optional: mount config or use env
+    restart: "no"
+    # Healthcheck: ping over tunnel (client IP 10.0.0.100) if client is up
+    # healthcheck:
+    #   test: ["CMD", "ping", "-c", "1", "10.0.0.100"]
+    #   interval: 30s
+    #   timeout: 5s
+    #   retries: 2
+    #   start_period: 10s
+
+  hans-client:
+    build: .
+    image: hans:latest
+    container_name: hans-client
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    network_mode: host
+    # Client: -c server -p passphrase -f; set HANS_SERVER to server's IP
+    command: ["-c", "${HANS_SERVER:-127.0.0.1}", "-p", "${HANS_PASSPHRASE:-passphrase}", "-f", "-d", "tun1"]
+    environment:
+      - HANS_SERVER=${HANS_SERVER:-127.0.0.1}
+      - HANS_PASSPHRASE=${HANS_PASSPHRASE:-passphrase}
+      - HANS_NETWORK=${HANS_NETWORK:-10.0.0.0}
+    depends_on:
+      - hans-server
+    restart: "no"

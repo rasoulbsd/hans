@@ -17,39 +17,30 @@
  *
  */
 
-#include "utility.h"
+#ifndef STATS_H
+#define STATS_H
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <time.h>
-#include <sstream>
-#include <arpa/inet.h>
+#include <stdint.h>
 
-std::string Utility::formatIp(uint32_t ip)
+class Stats
 {
-    std::stringstream s;
-    s << ((ip >> 24) & 0xff) << '.'
-      << ((ip >> 16) & 0xff) << '.'
-      << ((ip >>  8) & 0xff) << '.'
-      << ((ip >>  0) & 0xff);
-    return s.str();
-}
+public:
+    Stats();
 
-std::string Utility::formatIp6(const struct in6_addr &ip6)
-{
-    char buf[INET6_ADDRSTRLEN];
-    if (inet_ntop(AF_INET6, &ip6, buf, sizeof(buf)) == NULL)
-        return std::string("::");
-    return std::string(buf);
-}
+    void incPacketsSent(int bytes = 0);
+    void incPacketsReceived(int bytes = 0);
+    void incDroppedSendFail();
+    void incDroppedQueueFull();
 
-int Utility::rand()
-{
-    static bool init = false;
-    if (!init)
-    {
-        init = true;
-        srand(time(NULL));
-    }
-    return ::rand();
-}
+    void dumpToSyslog() const;
+
+private:
+    uint64_t packets_sent;
+    uint64_t packets_received;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+    uint64_t packets_dropped_send_fail;
+    uint64_t packets_dropped_queue_full;
+};
+
+#endif

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, master]
+  pull_request:
+    branches: [main, develop, master]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          make clean || true
+          make
+
+      - name: Check binary
+        run: |
+          test -f hans && echo "hans binary built" || (echo "hans not found"; exit 1)
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          make clean || true
+          make
+
+      - name: Check binary
+        run: |
+          test -f hans && echo "hans binary built" || (echo "hans not found"; exit 1)

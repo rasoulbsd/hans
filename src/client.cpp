@@ -22,6 +22,7 @@
 #include "exception.h"
 #include "config.h"
 #include "utility.h"
+#include "hmac.h"
 
 #include <string.h>
 #include <arpa/inet.h>
@@ -35,12 +36,20 @@ const Worker::TunnelHeader::Magic Client::magic("hanc");
 
 Client::Client(int tunnelMtu, const string *deviceName, uint32_t serverIp,
                int maxPolls, const string &passphrase, uid_t uid, gid_t gid,
-               bool changeEchoId, bool changeEchoSeq, uint32_t desiredIp)
-    : Worker(tunnelMtu, deviceName, false, uid, gid), auth(passphrase)
+               bool changeEchoId, bool changeEchoSeq, uint32_t desiredIp,
+               int recvBufSize, int sndBufSize, int rateKbps,
+               bool useIPv6, const struct in6_addr *serverIp6)
+    : Worker(tunnelMtu, deviceName, false, uid, gid, recvBufSize, sndBufSize, rateKbps, !useIPv6, useIPv6), auth(passphrase)
 {
     this->serverIp = serverIp;
+    this->isIPv6 = useIPv6;
+    if (useIPv6 && serverIp6)
+        this->serverIp6 = *serverIp6;
+    else
+        memset(&this->serverIp6, 0, sizeof(this->serverIp6));
     this->clientIp = INADDR_NONE;
     this->desiredIp = desiredIp;
+    this->useHmac = true;
     this->maxPolls = maxPolls;
     this->nextEchoId = Utility::rand();
     this->changeEchoId = changeEchoId;
@@ -58,10 +67,11 @@ Client::~Client()
 void Client::sendConnectionRequest()
 {
     Server::ClientConnectData *connectData = (Server::ClientConnectData *)echoSendPayloadBuffer();
+    connectData->version = 2;
     connectData->maxPolls = maxPolls;
-    connectData->desiredIp = desiredIp;
+    connectData->desiredIp = htonl(desiredIp);
 
-    syslog(LOG_DEBUG, "sending connection request");
+    syslog(LOG_DEBUG, "sending connection request (HMAC)");
 
     sendEchoToServer(TunnelHeader::TYPE_CONNECTION_REQUEST, sizeof(Server::ClientConnectData));
 
@@ -90,9 +100,18 @@ void Client::sendChallengeResponse(int dataLength)
     setTimeout(5000);
 }
 
+bool Client::handleEchoData6(const Worker::TunnelHeader &header, int dataLength, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq)
+{
+    if (!isIPv6 || memcmp(&realIp, &serverIp6, sizeof(serverIp6)) != 0 || !reply)
+        return false;
+    return handleEchoData(header, dataLength, 0, reply, id, seq);
+}
+
 bool Client::handleEchoData(const TunnelHeader &header, int dataLength, uint32_t realIp, bool reply, uint16_t, uint16_t)
 {
-    if (realIp != serverIp || !reply)
+    if (!reply)
+        return false;
+    if (!isIPv6 && realIp != serverIp)
         return false;
 
     if (header.magic != Server::magic)
@@ -175,7 +194,10 @@ void Client::sendEchoToServer(Worker::TunnelHeader::Type type, int dataLength)
     if (maxPolls == 0 && state == STATE_ESTABLISHED)
         setTimeout(KEEP_ALIVE_INTERVAL);
 
-    sendEcho(magic, type, dataLength, serverIp, false, nextEchoId, nextEchoSequence);
+    if (isIPv6)
+        sendEcho6(magic, type, dataLength, serverIp6, false, nextEchoId, nextEchoSequence);
+    else
+        sendEcho(magic, type, dataLength, serverIp, false, nextEchoId, nextEchoSequence);
 
     if (changeEchoId)
         nextEchoId = nextEchoId + 38543; // some random prime

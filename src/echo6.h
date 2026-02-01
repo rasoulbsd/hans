@@ -17,30 +17,30 @@
  *
  */
 
-#ifndef ECHO_H
-#define ECHO_H
+#ifndef ECHO6_H
+#define ECHO6_H
 
-#include <string>
 #include <vector>
 #include <stdint.h>
+#include <netinet/in.h>
 
-class Echo
+class Echo6
 {
 public:
-    Echo(int maxPayloadSize, int recvBufSize = 256 * 1024, int sndBufSize = 256 * 1024);
-    ~Echo();
+    Echo6(int maxPayloadSize, int recvBufSize = 256 * 1024, int sndBufSize = 256 * 1024);
+    ~Echo6();
 
     int getFd() { return fd; }
 
-    bool send(int payloadLength, uint32_t realIp, bool reply, uint16_t id, uint16_t seq);
-    int receive(uint32_t &realIp, bool &reply, uint16_t &id, uint16_t &seq);
+    bool send(int payloadLength, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq);
+    int receive(struct in6_addr &realIp, bool &reply, uint16_t &id, uint16_t &seq);
 
     char *sendPayloadBuffer();
     char *receivePayloadBuffer();
 
     static int headerSize();
 protected:
-    struct EchoHeader
+    struct Icmp6Header
     {
         uint8_t type;
         uint8_t code;
@@ -49,7 +49,15 @@ protected:
         uint16_t seq;
     }; // size = 8
 
-    uint16_t icmpChecksum(const char *data, int length);
+    /* When IPV6_CHECKSUM setsockopt is unsupported (e.g. WSL/Docker), we fill checksum in userspace */
+    bool kernelChecksum_;
+    struct in6_addr cachedDest_;
+    struct in6_addr cachedSrc_;
+    bool cachedSrcValid_;
+
+    static uint16_t icmp6Checksum(const struct in6_addr &src, const struct in6_addr &dst,
+                                  const void *msg, size_t msgLen);
+    bool getSourceForDest(const struct in6_addr &dest, struct in6_addr &srcOut);
 
     int fd;
     int bufferSize;

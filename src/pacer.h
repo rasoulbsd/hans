@@ -17,39 +17,26 @@
  *
  */
 
-#include "utility.h"
+#ifndef PACER_H
+#define PACER_H
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <time.h>
-#include <sstream>
-#include <arpa/inet.h>
+#include "time.h"
 
-std::string Utility::formatIp(uint32_t ip)
+class Pacer
 {
-    std::stringstream s;
-    s << ((ip >> 24) & 0xff) << '.'
-      << ((ip >> 16) & 0xff) << '.'
-      << ((ip >>  8) & 0xff) << '.'
-      << ((ip >>  0) & 0xff);
-    return s.str();
-}
+public:
+    Pacer(); /* disabled */
+    Pacer(int rateKbps, int burstBytes = 4500);
 
-std::string Utility::formatIp6(const struct in6_addr &ip6)
-{
-    char buf[INET6_ADDRSTRLEN];
-    if (inet_ntop(AF_INET6, &ip6, buf, sizeof(buf)) == NULL)
-        return std::string("::");
-    return std::string(buf);
-}
+    void refill(Time now);
+    bool allowSend(int payloadBytes);
 
-int Utility::rand()
-{
-    static bool init = false;
-    if (!init)
-    {
-        init = true;
-        srand(time(NULL));
-    }
-    return ::rand();
-}
+private:
+    bool enabled;
+    double tokens;       /* bytes */
+    double refillRate;    /* bytes per millisecond */
+    int burstBytes;
+    Time lastRefill;
+};
+
+#endif

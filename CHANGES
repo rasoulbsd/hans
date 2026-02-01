@@ -1,3 +1,20 @@
+Fork: Modernization and features (2025)
+---------------------------------------
+* Metrics: app-level counters (packets_sent/received, dropped_send_fail, dropped_queue_full). Dump on SIGUSR1. Configure: see stats in syslog after kill -USR1 <pid>. Validate: run iperf3 over tunnel, send SIGUSR1, check syslog.
+* Socket buffers: SO_RCVBUF/SO_SNDBUF on raw ICMP socket (default 256 KiB). Configure: -B recv,snd (e.g. -B 524288,524288). Validate: higher throughput under load.
+* Batching: batch recvfrom (up to 32) when ICMP readable; non-blocking ICMP socket on Linux. Reduces syscall rate.
+* Pacing: optional token bucket (-R rate_kbps). Configure: -R 80000 for 80 Mbps cap. Validate: smoother throughput, fewer drops under burst.
+* Config knobs: -W max_buffered_packets (server), -B, -R. MAX_BUFFERED_PACKETS overridden by -W.
+* CI: GitHub Actions build on Ubuntu and macOS.
+* README: "Performance tuning on Ubuntu", "Troubleshooting packet loss", benchmark reference (docs/benchmark.md).
+* IPv6: client -6 connects via AAAA; server dual-stack (IPv4 + IPv6). Tunnel payload remains IPv4. Configure: hans -c server -6. Validate: connect over IPv6, ping over tunnel.
+* Docker: Dockerfile and docker-compose for server/client. Configure: HANS_SERVER, HANS_PASSPHRASE. See docs/docker.md.
+* HMAC auth: handshake HMAC-SHA256 (version 2). New client sends 6-byte connection request with version=2; 32-byte HMAC response. Legacy (5-byte request, 20-byte SHA1) still supported. Configure: default on for new client. Validate: connect with new client to new server.
+* MTU: -m mtu (unchanged). Docs: docs/mtu.md (typical values, path MTU discovery).
+* Sequence/retransmit: TYPE_DATA_SEQ, TYPE_NACK; SEQUENCE_ENABLED in config.h. Docs: docs/sequence.md.
+* Multiplexing: NUM_CHANNELS in config.h; docs/multiplexing.md.
+* Congestion control: optional stub (congestion.cpp/h); off by default. Docs: README.
+
 Release 1.1 (November 2022)
 ---------------------------
 * Switch to utun devices on macOS (thanks to unkernet)

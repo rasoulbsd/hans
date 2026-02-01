@@ -21,6 +21,7 @@
 #include "client.h"
 #include "config.h"
 #include "utility.h"
+#include "hmac.h"
 
 #include <string.h>
 #include <arpa/inet.h>
@@ -36,11 +37,13 @@ using std::endl;
 const Worker::TunnelHeader::Magic Server::magic("hans");
 
 Server::Server(int tunnelMtu, const string *deviceName, const string &passphrase,
-               uint32_t network, bool answerEcho, uid_t uid, gid_t gid, int pollTimeout)
-    : Worker(tunnelMtu, deviceName, answerEcho, uid, gid), auth(passphrase)
+               uint32_t network, bool answerEcho, uid_t uid, gid_t gid, int pollTimeout,
+               int maxBufferedPackets, int recvBufSize, int sndBufSize, int rateKbps)
+    : Worker(tunnelMtu, deviceName, answerEcho, uid, gid, recvBufSize, sndBufSize, rateKbps, true, true), auth(passphrase)
 {
     this->network = network & 0xffffff00;
     this->pollTimeout = pollTimeout;
+    this->maxBufferedPackets = maxBufferedPackets > 0 ? maxBufferedPackets : 20;
     this->latestAssignedIpOffset = FIRST_ASSIGNED_IP_OFFSET - 1;
 
     tun.setIp(this->network + 1, this->network + 2);
@@ -57,11 +60,15 @@ void Server::handleUnknownClient(const TunnelHeader &header, int dataLength, uin
 {
     ClientData client;
     client.realIp = realIp;
+    memset(&client.realIp6, 0, sizeof(client.realIp6));
+    client.isV6 = false;
+    client.useHmac = false;
     client.maxPolls = 1;
 
     pollReceived(&client, echoId, echoSeq);
 
-    if (header.type != TunnelHeader::TYPE_CONNECTION_REQUEST || dataLength != sizeof(ClientConnectData))
+    if (header.type != TunnelHeader::TYPE_CONNECTION_REQUEST ||
+        (dataLength != sizeof(ClientConnectDataLegacy) && dataLength != sizeof(ClientConnectData)))
     {
         syslog(LOG_DEBUG, "invalid request (type %d) from %s", header.type,
                Utility::formatIp(realIp).c_str());
@@ -69,11 +76,23 @@ void Server::handleUnknownClient(const TunnelHeader &header, int dataLength, uin
         return;
     }
 
-    ClientConnectData *connectData = (ClientConnectData *)echoReceivePayloadBuffer();
-
-    client.maxPolls = connectData->maxPolls;
+    uint32_t desiredIp = 0;
+    if (dataLength == sizeof(ClientConnectDataLegacy))
+    {
+        ClientConnectDataLegacy *connectData = (ClientConnectDataLegacy *)echoReceivePayloadBuffer();
+        client.maxPolls = connectData->maxPolls;
+        desiredIp = ntohl(connectData->desiredIp);
+        client.useHmac = false;
+    }
+    else
+    {
+        ClientConnectData *connectData = (ClientConnectData *)echoReceivePayloadBuffer();
+        client.maxPolls = connectData->maxPolls;
+        desiredIp = ntohl(connectData->desiredIp);
+        client.useHmac = (connectData->version >= 2);
+    }
     client.state = ClientData::STATE_NEW;
-    client.tunnelIp = reserveTunnelIp(connectData->desiredIp);
+    client.tunnelIp = reserveTunnelIp(desiredIp);
 
     syslog(LOG_DEBUG, "new client %s with tunnel address %s\n",
            Utility::formatIp(client.realIp).data(),
@@ -87,6 +106,63 @@ void Server::handleUnknownClient(const TunnelHeader &header, int dataLength, uin
         // add client to list
         clientList.push_front(client);
         clientRealIpMap[realIp] = clientList.begin();
+        clientTunnelIpMap[client.tunnelIp] = clientList.begin();
+    }
+    else
+    {
+        syslog(LOG_WARNING, "server full");
+        sendEchoToClient(&client, TunnelHeader::TYPE_SERVER_FULL, 0);
+    }
+}
+
+void Server::handleUnknownClient6(const TunnelHeader &header, int dataLength, const struct in6_addr &realIp, uint16_t echoId, uint16_t echoSeq)
+{
+    ClientData client;
+    client.realIp = 0;
+    client.realIp6 = realIp;
+    client.isV6 = true;
+    client.useHmac = false;
+    client.maxPolls = 1;
+
+    pollReceived(&client, echoId, echoSeq);
+
+    if (header.type != TunnelHeader::TYPE_CONNECTION_REQUEST ||
+        (dataLength != sizeof(ClientConnectDataLegacy) && dataLength != sizeof(ClientConnectData)))
+    {
+        syslog(LOG_DEBUG, "invalid request (type %d) from %s", header.type, Utility::formatIp6(realIp).c_str());
+        sendReset(&client);
+        return;
+    }
+
+    uint32_t desiredIp6 = 0;
+    if (dataLength == sizeof(ClientConnectDataLegacy))
+    {
+        ClientConnectDataLegacy *connectData = (ClientConnectDataLegacy *)echoReceivePayloadBuffer();
+        client.maxPolls = connectData->maxPolls;
+        desiredIp6 = ntohl(connectData->desiredIp);
+        client.useHmac = false;
+    }
+    else
+    {
+        ClientConnectData *connectData = (ClientConnectData *)echoReceivePayloadBuffer();
+        client.maxPolls = connectData->maxPolls;
+        desiredIp6 = ntohl(connectData->desiredIp);
+        client.useHmac = (connectData->version >= 2);
+    }
+    client.state = ClientData::STATE_NEW;
+    client.tunnelIp = reserveTunnelIp(desiredIp6);
+
+    syslog(LOG_DEBUG, "new IPv6 client %s with tunnel address %s\n",
+           Utility::formatIp6(client.realIp6).data(),
+           Utility::formatIp(client.tunnelIp).data());
+
+    if (client.tunnelIp != 0)
+    {
+        client.challenge = auth.generateChallenge(CHALLENGE_SIZE);
+        sendChallenge(&client);
+
+        clientList.push_front(client);
+        clientRealIp6Map[realIp] = clientList.begin();
         clientTunnelIpMap[client.tunnelIp] = clientList.begin();
     }
     else
@@ -110,27 +186,46 @@ void Server::sendChallenge(ClientData *client)
 void Server::removeClient(ClientData *client)
 {
     syslog(LOG_DEBUG, "removing client %s with tunnel ip %s\n",
-           Utility::formatIp(client->realIp).data(),
+           client->isV6 ? Utility::formatIp6(client->realIp6).data() : Utility::formatIp(client->realIp).data(),
            Utility::formatIp(client->tunnelIp).data());
 
     releaseTunnelIp(client->tunnelIp);
 
-    ClientList::iterator it = clientRealIpMap[client->realIp];
-
-    clientRealIpMap.erase(client->realIp);
+    ClientList::iterator it;
+    if (client->isV6)
+    {
+        it = clientRealIp6Map[client->realIp6];
+        clientRealIp6Map.erase(client->realIp6);
+    }
+    else
+    {
+        it = clientRealIpMap[client->realIp];
+        clientRealIpMap.erase(client->realIp);
+    }
     clientTunnelIpMap.erase(client->tunnelIp);
-
     clientList.erase(it);
 }
 
 void Server::checkChallenge(ClientData *client, int length)
 {
-    Auth::Response rightResponse = auth.getResponse(client->challenge);
+    bool valid = false;
+    if (client->useHmac)
+    {
+        if (length == (int)Hmac::SHA256_SIZE &&
+            auth.verifyChallengeResponseHMAC(client->challenge, echoReceivePayloadBuffer(), length))
+            valid = true;
+    }
+    else
+    {
+        Auth::Response rightResponse = auth.getResponse(client->challenge);
+        if (length == (int)sizeof(Auth::Response) && memcmp(&rightResponse, echoReceivePayloadBuffer(), length) == 0)
+            valid = true;
+    }
 
-    if (length != sizeof(Auth::Response) || memcmp(&rightResponse, echoReceivePayloadBuffer(), length) != 0)
+    if (!valid)
     {
         syslog(LOG_DEBUG, "wrong challenge response from %s\n",
-               Utility::formatIp(client->realIp).data());
+               client->isV6 ? Utility::formatIp6(client->realIp6).data() : Utility::formatIp(client->realIp).data());
 
         sendEchoToClient(client, TunnelHeader::TYPE_CHALLENGE_ERROR, 0);
 
@@ -221,6 +316,68 @@ bool Server::handleEchoData(const TunnelHeader &header, int dataLength, uint32_t
     return true;
 }
 
+bool Server::handleEchoData6(const TunnelHeader &header, int dataLength, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq)
+{
+    if (reply)
+        return false;
+
+    if (header.magic != Client::magic)
+        return false;
+
+    ClientData *client = getClientByRealIp6(realIp);
+    if (client == NULL)
+    {
+        handleUnknownClient6(header, dataLength, realIp, id, seq);
+        return true;
+    }
+
+    pollReceived(client, id, seq);
+
+    switch (header.type)
+    {
+        case TunnelHeader::TYPE_CONNECTION_REQUEST:
+            if (client->state == ClientData::STATE_CHALLENGE_SENT)
+            {
+                sendChallenge(client);
+                return true;
+            }
+            while (client->pollIds.size() > 1)
+                client->pollIds.pop();
+            syslog(LOG_DEBUG, "reconnecting %s", Utility::formatIp6(realIp).data());
+            sendReset(client);
+            removeClient(client);
+            return true;
+        case TunnelHeader::TYPE_CHALLENGE_RESPONSE:
+            if (client->state == ClientData::STATE_CHALLENGE_SENT)
+            {
+                checkChallenge(client, dataLength);
+                return true;
+            }
+            break;
+        case TunnelHeader::TYPE_DATA:
+            if (client->state == ClientData::STATE_ESTABLISHED)
+            {
+                if (dataLength == 0)
+                {
+                    syslog(LOG_WARNING, "received empty data packet");
+                    return true;
+                }
+                sendToTun(dataLength);
+                return true;
+            }
+            break;
+        case TunnelHeader::TYPE_POLL:
+            return true;
+        default:
+            break;
+    }
+
+    syslog(LOG_DEBUG, "invalid packet from: %s, type: %d, state: %d",
+           Utility::formatIp6(realIp).data(), header.type, client->state);
+
+    return true;
+}
+
 Server::ClientData *Server::getClientByTunnelIp(uint32_t ip)
 {
     ClientIpMap::iterator it = clientTunnelIpMap.find(ip);
@@ -234,6 +391,15 @@ Server::ClientData *Server::getClientByRealIp(uint32_t ip)
 {
     ClientIpMap::iterator it = clientRealIpMap.find(ip);
     if (it == clientRealIpMap.end())
+        return NULL;
+
+    return &*it->second;
+}
+
+Server::ClientData *Server::getClientByRealIp6(const struct in6_addr &ip6)
+{
+    ClientIp6Map::iterator it = clientRealIp6Map.find(ip6);
+    if (it == clientRealIp6Map.end())
         return NULL;
 
     return &*it->second;
@@ -282,7 +448,13 @@ void Server::sendEchoToClient(ClientData *client, TunnelHeader::Type type, int d
 {
     if (client->maxPolls == 0)
     {
-        sendEcho(magic, type, dataLength, client->realIp, true, client->pollIds.front().id, client->pollIds.front().seq);
+        if (client->isV6)
+        {
+            memcpy(echoSendPayloadBuffer6() - sizeof(TunnelHeader), echoSendPayloadBuffer() - sizeof(TunnelHeader), dataLength + sizeof(TunnelHeader));
+            sendEcho6(magic, type, dataLength, client->realIp6, true, client->pollIds.front().id, client->pollIds.front().seq);
+        }
+        else
+            sendEcho(magic, type, dataLength, client->realIp, true, client->pollIds.front().id, client->pollIds.front().seq);
         return;
     }
 
@@ -292,14 +464,21 @@ void Server::sendEchoToClient(ClientData *client, TunnelHeader::Type type, int d
         client->pollIds.pop();
 
         DEBUG_ONLY(cout << "sending -> " << client->pollIds.size() << endl);
-        sendEcho(magic, type, dataLength, client->realIp, true, echoId.id, echoId.seq);
+        if (client->isV6)
+        {
+            memcpy(echoSendPayloadBuffer6() - sizeof(TunnelHeader), echoSendPayloadBuffer() - sizeof(TunnelHeader), dataLength + sizeof(TunnelHeader));
+            sendEcho6(magic, type, dataLength, client->realIp6, true, echoId.id, echoId.seq);
+        }
+        else
+            sendEcho(magic, type, dataLength, client->realIp, true, echoId.id, echoId.seq);
         return;
     }
 
-    if (client->pendingPackets.size() == MAX_BUFFERED_PACKETS)
+    if (client->pendingPackets.size() >= (unsigned int)maxBufferedPackets)
     {
         client->pendingPackets.pop();
-        syslog(LOG_WARNING, "packet to %s dropped",
+        stats.incDroppedQueueFull();
+        syslog(LOG_WARNING, "packet to %s dropped (queue full)",
                Utility::formatIp(client->tunnelIp).data());
     }
 
@@ -327,7 +506,7 @@ void Server::handleTimeout()
         if (client.lastActivity + KEEP_ALIVE_INTERVAL * 2 < now)
         {
             syslog(LOG_DEBUG, "client %s timed out\n",
-                   Utility::formatIp(client.realIp).data());
+                   client.isV6 ? Utility::formatIp6(client.realIp6).data() : Utility::formatIp(client.realIp).data());
             removeClient(&client);
         }
     }

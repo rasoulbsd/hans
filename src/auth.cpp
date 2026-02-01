@@ -19,6 +19,7 @@
 
 #include "auth.h"
 #include "sha1.h"
+#include "hmac.h"
 #include "utility.h"
 
 #include <arpa/inet.h>
@@ -53,4 +54,14 @@ Auth::Challenge Auth::generateChallenge(int length) const
         challenge[i] = Utility::rand();
 
     return challenge;
+}
+
+Auth::Challenge Auth::getResponseHMAC(const Challenge &challenge) const
+{
+    return Hmac::sign(passphrase, &challenge[0], challenge.size());
+}
+
+bool Auth::verifyChallengeResponseHMAC(const Challenge &challenge, const char *response, size_t responseLen) const
+{
+    return Hmac::verify(passphrase, &challenge[0], challenge.size(), response, responseLen);
 }

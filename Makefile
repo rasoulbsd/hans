@@ -1,4 +1,4 @@
-LDFLAGS = `sh osflags ld $(MODE)`
+LDFLAGS = `sh osflags ld $(MODE)` -lssl -lcrypto
 CFLAGS = -c -g `sh osflags c $(MODE)`
 CPPFLAGS = -c -g -std=c++98 -pedantic -Wall -Wextra -Wno-sign-compare -Wno-missing-field-initializers `sh osflags c $(MODE)`
 TUN_DEV_FILE = `sh osflags dev $(MODE)`
@@ -16,8 +16,8 @@ build_dir:
 
 tunemu.o: directories build/tunemu.o
 
-hans: build/tun.o build/sha1.o build/main.o build/client.o build/server.o build/auth.o build/worker.o build/time.o build/tun_dev.o build/echo.o build/exception.o build/utility.o
-	$(GPP) -o hans build/tun.o build/sha1.o build/main.o build/client.o build/server.o build/auth.o build/worker.o build/time.o build/tun_dev.o build/echo.o build/exception.o build/utility.o $(LDFLAGS)
+hans: build/tun.o build/sha1.o build/main.o build/client.o build/server.o build/auth.o build/worker.o build/time.o build/stats.o build/pacer.o build/tun_dev.o build/echo.o build/echo6.o build/hmac.o build/congestion.o build/exception.o build/utility.o
+	$(GPP) -o hans build/tun.o build/sha1.o build/main.o build/client.o build/server.o build/auth.o build/worker.o build/time.o build/stats.o build/pacer.o build/tun_dev.o build/echo.o build/echo6.o build/hmac.o build/congestion.o build/exception.o build/utility.o $(LDFLAGS)
 
 build/utility.o: src/utility.cpp src/utility.h
 	$(GPP) -c src/utility.cpp -o $@ -o $@ $(CPPFLAGS)
@@ -27,6 +27,15 @@ build/exception.o: src/exception.cpp src/exception.h
 
 build/echo.o: src/echo.cpp src/echo.h src/exception.h
 	$(GPP) -c src/echo.cpp -o $@ $(CPPFLAGS)
+
+build/echo6.o: src/echo6.cpp src/echo6.h src/exception.h
+	$(GPP) -c src/echo6.cpp -o $@ $(CPPFLAGS)
+
+build/hmac.o: src/hmac.cpp src/hmac.h
+	$(GPP) -c src/hmac.cpp -o $@ $(CPPFLAGS)
+
+build/congestion.o: src/congestion.cpp src/congestion.h src/time.h
+	$(GPP) -c src/congestion.cpp -o $@ $(CPPFLAGS)
 
 build/tun.o: src/tun.cpp src/tun.h src/exception.h src/utility.h src/tun_dev.h
 	$(GPP) -c src/tun.cpp -o $@ $(CPPFLAGS)
@@ -49,11 +58,17 @@ build/server.o: src/server.cpp src/server.h src/client.h src/utility.h src/confi
 build/auth.o: src/auth.cpp src/auth.h src/sha1.h src/utility.h
 	$(GPP) -c src/auth.cpp -o $@ $(CPPFLAGS)
 
-build/worker.o: src/worker.cpp src/worker.h src/tun.h src/exception.h src/time.h src/echo.h src/tun_dev.h src/config.h
+build/worker.o: src/worker.cpp src/worker.h src/tun.h src/exception.h src/time.h src/echo.h src/stats.h src/pacer.h src/tun_dev.h src/config.h
 	$(GPP) -c src/worker.cpp -o $@ $(CPPFLAGS)
 
 build/time.o: src/time.cpp src/time.h
 	$(GPP) -c src/time.cpp -o $@ $(CPPFLAGS)
+
+build/stats.o: src/stats.cpp src/stats.h
+	$(GPP) -c src/stats.cpp -o $@ $(CPPFLAGS)
+
+build/pacer.o: src/pacer.cpp src/pacer.h src/time.h
+	$(GPP) -c src/pacer.cpp -o $@ $(CPPFLAGS)
 
 clean:
 	rm -rf build hans

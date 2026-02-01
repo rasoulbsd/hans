@@ -27,6 +27,7 @@
 #include <netinet/ip.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <syslog.h>
 #include <stdio.h>
@@ -35,11 +36,30 @@
 
 typedef ip IpHeader;
 
-Echo::Echo(int maxPayloadSize)
+Echo::Echo(int maxPayloadSize, int recvBufSize, int sndBufSize)
 {
     fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (fd == -1)
         throw Exception("creating icmp socket", true);
+
+    if (recvBufSize > 0)
+    {
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &recvBufSize, sizeof(recvBufSize)) == -1)
+            syslog(LOG_WARNING, "SO_RCVBUF %d: %s", recvBufSize, strerror(errno));
+    }
+    if (sndBufSize > 0)
+    {
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndBufSize, sizeof(sndBufSize)) == -1)
+            syslog(LOG_WARNING, "SO_SNDBUF %d: %s", sndBufSize, strerror(errno));
+    }
+
+#ifdef WIN32
+    /* non-blocking not used on Windows for now */
+#else
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags != -1 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+        syslog(LOG_WARNING, "O_NONBLOCK: %s", strerror(errno));
+#endif
 
     bufferSize = maxPayloadSize + headerSize();
     sendBuffer.resize(bufferSize);
@@ -56,7 +76,7 @@ int Echo::headerSize()
     return sizeof(IpHeader) + sizeof(EchoHeader);
 }
 
-void Echo::send(int payloadLength, uint32_t realIp, bool reply, uint16_t id, uint16_t seq)
+bool Echo::send(int payloadLength, uint32_t realIp, bool reply, uint16_t id, uint16_t seq)
 {
     struct sockaddr_in target;
     target.sin_family = AF_INET;
@@ -75,7 +95,8 @@ void Echo::send(int payloadLength, uint32_t realIp, bool reply, uint16_t id, uin
 
     int result = sendto(fd, sendBuffer.data() + sizeof(IpHeader), payloadLength + sizeof(EchoHeader), 0, (struct sockaddr *)&target, sizeof(struct sockaddr_in));
     if (result == -1)
-        syslog(LOG_ERR, "error sending icmp packet: %s", strerror(errno));
+        return false;
+    return true;
 }
 
 int Echo::receive(uint32_t &realIp, bool &reply, uint16_t &id, uint16_t &seq)
@@ -86,8 +107,14 @@ int Echo::receive(uint32_t &realIp, bool &reply, uint16_t &id, uint16_t &seq)
     int dataLength = recvfrom(fd, receiveBuffer.data(), bufferSize, 0, (struct sockaddr *)&source, (socklen_t *)&source_addr_len);
     if (dataLength == -1)
     {
+#ifdef WIN32
+        return -1;
+#else
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return -1;
         syslog(LOG_ERR, "error receiving icmp packet: %s", strerror(errno));
         return -1;
+#endif
     }
 
     if (dataLength < sizeof(IpHeader) + sizeof(EchoHeader))

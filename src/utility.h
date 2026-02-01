@@ -22,11 +22,13 @@
 
 #include <string>
 #include <stdint.h>
+#include <netinet/in.h>
 
 class Utility
 {
 public:
     static std::string formatIp(uint32_t ip);
+    static std::string formatIp6(const struct in6_addr &ip6);
     static int rand();
 };
 

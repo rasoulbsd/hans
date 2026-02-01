@@ -29,16 +29,26 @@
 #include <list>
 #include <set>
 #include <string>
+#include <cstring>
+#include <netinet/in.h>
 
 class Server : public Worker
 {
 public:
     Server(int tunnelMtu, const std::string *deviceName, const std::string &passphrase,
-           uint32_t network, bool answerEcho, uid_t uid, gid_t gid, int pollTimeout);
+           uint32_t network, bool answerEcho, uid_t uid, gid_t gid, int pollTimeout,
+           int maxBufferedPackets = 20, int recvBufSize = 256 * 1024, int sndBufSize = 256 * 1024, int rateKbps = 0);
     virtual ~Server();
+
+    struct ClientConnectDataLegacy
+    {
+        uint8_t maxPolls;
+        uint32_t desiredIp;
+    };
 
     struct ClientConnectData
     {
+        uint8_t version;
         uint8_t maxPolls;
         uint32_t desiredIp;
     };
@@ -70,6 +80,8 @@ protected:
         };
 
         uint32_t realIp;
+        struct in6_addr realIp6;
+        bool isV6;
         uint32_t tunnelIp;
 
         std::queue<Packet> pendingPackets;
@@ -79,14 +91,22 @@ protected:
         Time lastActivity;
 
         State state;
+        bool useHmac;
 
         Auth::Challenge challenge;
     };
 
     typedef std::list<ClientData> ClientList;
     typedef std::map<uint32_t, ClientList::iterator> ClientIpMap;
+    struct In6AddrCompare {
+        bool operator()(const struct in6_addr &a, const struct in6_addr &b) const {
+            return memcmp(&a, &b, sizeof(a)) < 0;
+        }
+    };
+    typedef std::map<struct in6_addr, ClientList::iterator, In6AddrCompare> ClientIp6Map;
 
     virtual bool handleEchoData(const TunnelHeader &header, int dataLength, uint32_t realIp, bool reply, uint16_t id, uint16_t seq);
+    virtual bool handleEchoData6(const TunnelHeader &header, int dataLength, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq);
     virtual void handleTunData(int dataLength, uint32_t sourceIp, uint32_t destIp);
     virtual void handleTimeout();
 
@@ -95,6 +115,7 @@ protected:
     void serveTun(ClientData *client);
 
     void handleUnknownClient(const TunnelHeader &header, int dataLength, uint32_t realIp, uint16_t echoId, uint16_t echoSeq);
+    void handleUnknownClient6(const TunnelHeader &header, int dataLength, const struct in6_addr &realIp, uint16_t echoId, uint16_t echoSeq);
     void removeClient(ClientData *client);
 
     void sendChallenge(ClientData *client);
@@ -110,6 +131,7 @@ protected:
 
     ClientData *getClientByTunnelIp(uint32_t ip);
     ClientData *getClientByRealIp(uint32_t ip);
+    ClientData *getClientByRealIp6(const struct in6_addr &ip6);
 
     Auth auth;
 
@@ -118,9 +140,11 @@ protected:
     uint32_t latestAssignedIpOffset;
 
     Time pollTimeout;
+    int maxBufferedPackets;
 
     ClientList clientList;
     ClientIpMap clientRealIpMap;
+    ClientIp6Map clientRealIp6Map;
     ClientIpMap clientTunnelIpMap;
 };
 

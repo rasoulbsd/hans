@@ -29,9 +29,12 @@
 #include <sys/select.h>
 #include <grp.h>
 #include <iostream>
+#include <errno.h>
 
 using std::cout;
 using std::endl;
+
+const int Worker::RECV_BATCH_MAX = 32;
 
 Worker::TunnelHeader::Magic::Magic(const char *magic)
 {
@@ -50,8 +53,14 @@ bool Worker::TunnelHeader::Magic::operator!=(const Magic &other) const
 }
 
 Worker::Worker(int tunnelMtu, const std::string *deviceName, bool answerEcho,
-               uid_t uid, gid_t gid)
-    : echo(tunnelMtu + sizeof(TunnelHeader)), tun(deviceName, tunnelMtu)
+               uid_t uid, gid_t gid,
+               int recvBufSize, int sndBufSize, int rateKbps,
+               bool useIPv4, bool useIPv6)
+    : echo(useIPv4 ? new Echo(tunnelMtu + sizeof(TunnelHeader), recvBufSize, sndBufSize) : NULL),
+      echo6(useIPv6 ? new Echo6(tunnelMtu + sizeof(TunnelHeader), recvBufSize, sndBufSize) : NULL),
+      currentRecvFrom6(false),
+      tun(deviceName, tunnelMtu),
+      pacer(rateKbps > 0 ? rateKbps : 0, 4500)
 {
     this->tunnelMtu = tunnelMtu;
     this->answerEcho = answerEcho;
@@ -60,13 +69,30 @@ Worker::Worker(int tunnelMtu, const std::string *deviceName, bool answerEcho,
     this->privilegesDropped = false;
 }
 
-void Worker::sendEcho(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
+Worker::~Worker()
+{
+    delete echo;
+    echo = NULL;
+    delete echo6;
+    echo6 = NULL;
+}
+
+bool Worker::sendEcho(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
                       int length, uint32_t realIp, bool reply, uint16_t id, uint16_t seq)
 {
+    if (!echo)
+        return false;
     if (length > payloadBufferSize())
         throw Exception("packet too big");
 
-    TunnelHeader *header = (TunnelHeader *)echo.sendPayloadBuffer();
+    int totalLen = length + sizeof(TunnelHeader);
+    if (!pacer.allowSend(totalLen))
+    {
+        stats.incDroppedSendFail();
+        return false;
+    }
+
+    TunnelHeader *header = (TunnelHeader *)echo->sendPayloadBuffer();
     header->magic = magic;
     header->type = type;
 
@@ -74,12 +100,60 @@ void Worker::sendEcho(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
         cout << "sending: type " << type << ", length " << length
              << ", id " << id << ", seq " << seq << endl);
 
-    echo.send(length + sizeof(TunnelHeader), realIp, reply, id, seq);
+    if (!echo->send(totalLen, realIp, reply, id, seq))
+    {
+        stats.incDroppedSendFail();
+        return false;
+    }
+    stats.incPacketsSent(totalLen);
+    return true;
+}
+
+bool Worker::sendEcho6(const TunnelHeader::Magic &magic, TunnelHeader::Type type,
+                       int length, const struct in6_addr &realIp, bool reply, uint16_t id, uint16_t seq)
+{
+    if (!echo6)
+        return false;
+    if (length > payloadBufferSize())
+        throw Exception("packet too big");
+
+    int totalLen = length + sizeof(TunnelHeader);
+    if (!pacer.allowSend(totalLen))
+    {
+        stats.incDroppedSendFail();
+        return false;
+    }
+
+    TunnelHeader *header = (TunnelHeader *)echo6->sendPayloadBuffer();
+    header->magic = magic;
+    header->type = type;
+
+    if (!echo6->send(totalLen, realIp, reply, id, seq))
+    {
+        stats.incDroppedSendFail();
+        return false;
+    }
+    stats.incPacketsSent(totalLen);
+    return true;
 }
 
 void Worker::sendToTun(int length)
 {
     tun.write(echoReceivePayloadBuffer(), length);
+}
+
+char *Worker::echoSendPayloadBuffer()
+{
+    if (echo)
+        return echo->sendPayloadBuffer() + sizeof(TunnelHeader);
+    if (echo6)
+        return echo6->sendPayloadBuffer() + sizeof(TunnelHeader);
+    return NULL;
+}
+
+char *Worker::echoSendPayloadBuffer6()
+{
+    return echo6 ? echo6->sendPayloadBuffer() + sizeof(TunnelHeader) : NULL;
 }
 
 void Worker::setTimeout(Time delta)
@@ -92,7 +166,11 @@ void Worker::run()
     now = Time::now();
     alive = true;
 
-    int maxFd = echo.getFd() > tun.getFd() ? echo.getFd() : tun.getFd();
+    int maxFd = tun.getFd();
+    if (echo && echo->getFd() > maxFd)
+        maxFd = echo->getFd();
+    if (echo6 && echo6->getFd() > maxFd)
+        maxFd = echo6->getFd();
 
     while (alive)
     {
@@ -101,7 +179,10 @@ void Worker::run()
 
         FD_ZERO(&fs);
         FD_SET(tun.getFd(), &fs);
-        FD_SET(echo.getFd(), &fs);
+        if (echo)
+            FD_SET(echo->getFd(), &fs);
+        if (echo6)
+            FD_SET(echo6->getFd(), &fs);
 
         if (nextTimeout != Time::ZERO)
         {
@@ -121,6 +202,7 @@ void Worker::run()
                 return;
         }
         now = Time::now();
+        pacer.refill(now);
 
         // timeout
         if (result == 0)
@@ -130,21 +212,36 @@ void Worker::run()
             continue;
         }
 
-        // icmp data
-        if (FD_ISSET(echo.getFd(), &fs))
+        // icmp data (batch read up to RECV_BATCH_MAX)
+        if (echo && FD_ISSET(echo->getFd(), &fs))
         {
-            bool reply;
-            uint16_t id, seq;
-            uint32_t ip;
-
-            int dataLength = echo.receive(ip, reply, id, seq);
-            if (dataLength != -1)
+            int batchCount = 0;
+            while (batchCount < RECV_BATCH_MAX)
             {
+                bool reply;
+                uint16_t id, seq;
+                uint32_t ip;
+
+                currentRecvFrom6 = false;
+                int dataLength = echo->receive(ip, reply, id, seq);
+                if (dataLength == -1)
+                {
+#ifndef WIN32
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        break;
+#endif
+                    break;
+                }
+                batchCount++;
+                stats.incPacketsReceived(dataLength);
+#ifdef WIN32
+                break;
+#endif
                 bool valid = dataLength >= sizeof(TunnelHeader);
 
                 if (valid)
                 {
-                    TunnelHeader *header = (TunnelHeader *)echo.receivePayloadBuffer();
+                    TunnelHeader *header = (TunnelHeader *)echo->receivePayloadBuffer();
 
                     DEBUG_ONLY(
                         cout << "received: type " << header->type
@@ -156,8 +253,49 @@ void Worker::run()
 
                 if (!valid && !reply && answerEcho)
                 {
-                    memcpy(echo.sendPayloadBuffer(), echo.receivePayloadBuffer(), dataLength);
-                    echo.send(dataLength, ip, true, id, seq);
+                    memcpy(echo->sendPayloadBuffer(), echo->receivePayloadBuffer(), dataLength);
+                    echo->send(dataLength, ip, true, id, seq);
+                }
+            }
+        }
+
+        if (echo6 && FD_ISSET(echo6->getFd(), &fs))
+        {
+            int batchCount = 0;
+            while (batchCount < RECV_BATCH_MAX)
+            {
+                bool reply;
+                uint16_t id, seq;
+                struct in6_addr ip6;
+
+                currentRecvFrom6 = true;
+                int dataLength = echo6->receive(ip6, reply, id, seq);
+                if (dataLength == -1)
+                {
+#ifndef WIN32
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        break;
+#endif
+                    break;
+                }
+                batchCount++;
+                stats.incPacketsReceived(dataLength);
+#ifdef WIN32
+                break;
+#endif
+                bool valid = dataLength >= sizeof(TunnelHeader);
+
+                if (valid)
+                {
+                    TunnelHeader *header = (TunnelHeader *)echo6->receivePayloadBuffer();
+
+                    valid = handleEchoData6(*header, dataLength - sizeof(TunnelHeader), ip6, reply, id, seq);
+                }
+
+                if (!valid && !reply && answerEcho)
+                {
+                    memcpy(echo6->sendPayloadBuffer(), echo6->receivePayloadBuffer(), dataLength);
+                    echo6->send(dataLength, ip6, true, id, seq);
                 }
             }
         }
@@ -166,8 +304,10 @@ void Worker::run()
         if (FD_ISSET(tun.getFd(), &fs))
         {
             uint32_t sourceIp, destIp;
-
-            int dataLength = tun.read(echoSendPayloadBuffer(), sourceIp, destIp);
+            char *sendBuf = echoSendPayloadBuffer();
+            if (!sendBuf)
+                sendBuf = echoSendPayloadBuffer6();
+            int dataLength = sendBuf ? tun.read(sendBuf, sourceIp, destIp) : -1;
 
             if (dataLength == 0)
                 throw Exception("tunnel closed");
@@ -211,16 +351,20 @@ bool Worker::handleEchoData(const TunnelHeader &, int, uint32_t, bool, uint16_t,
     return true;
 }
 
+bool Worker::handleEchoData6(const TunnelHeader &, int, const struct in6_addr &, bool, uint16_t, uint16_t)
+{
+    return true;
+}
+
 void Worker::handleTunData(int, uint32_t, uint32_t) { }
 
 void Worker::handleTimeout() { }
 
-char *Worker::echoSendPayloadBuffer()
-{
-    return echo.sendPayloadBuffer() + sizeof(TunnelHeader);
-}
-
 char *Worker::echoReceivePayloadBuffer()
 {
-    return echo.receivePayloadBuffer() + sizeof(TunnelHeader);
+    if (currentRecvFrom6 && echo6)
+        return echo6->receivePayloadBuffer() + sizeof(TunnelHeader);
+    if (echo)
+        return echo->receivePayloadBuffer() + sizeof(TunnelHeader);
+    return NULL;
 }

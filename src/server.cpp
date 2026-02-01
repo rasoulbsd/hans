@@ -563,8 +563,10 @@ void Server::sendEchoToClient(ClientData *client, TunnelHeader::Type type, int d
     const int N = (int)client->pendingByFlow.size();
     if (N <= 0)
         return;
+    /* TUN data is in echoSendPayloadBuffer(); ICMP receive payload is in echoReceivePayloadBuffer(). */
+    char *payloadSrc = (type == TunnelHeader::TYPE_DATA) ? echoSendPayloadBuffer() : echoReceivePayloadBuffer();
     int flowId = (type == TunnelHeader::TYPE_DATA && N > 1)
-        ? getFlowIdFromPayload(echoReceivePayloadBuffer(), dataLength) : 0;
+        ? getFlowIdFromPayload(payloadSrc, dataLength) : 0;
     int maxPerFlow = (maxBufferedPackets > 0) ? (maxBufferedPackets + N - 1) / N : maxBufferedPackets;
     if (maxPerFlow < 1)
         maxPerFlow = 1;
@@ -583,7 +585,7 @@ void Server::sendEchoToClient(ClientData *client, TunnelHeader::Type type, int d
     Packet &packet = client->pendingByFlow[flowId].back();
     packet.type = type;
     packet.data.resize(dataLength);
-    memcpy(&packet.data[0], echoReceivePayloadBuffer(), dataLength);
+    memcpy(&packet.data[0], payloadSrc, dataLength);
 }
 
 void Server::releaseTunnelIp(uint32_t tunnelIp)

@@ -25,6 +25,7 @@ This document describes how to reproduce and measure tunnel throughput and packe
 3. **Run iperf3** over the tunnel (use the client’s *tunnel* IP, e.g. 10.0.0.100):
    - On server: `iperf3 -s`
    - On client (or another host that can reach the tunnel): `iperf3 -c 10.0.0.100 -t 120 -P 4`
+   - For **more even throughput** and fewer 0 KB/s streams, use **-P 2** or **-P 4** (see “Why 0 KB/s?” below). Single flow: `iperf3 -c 10.0.0.100 -t 120` (no -P).
    - For UDP at ~80 Mbps: `iperf3 -u -c 10.0.0.100 -b 80M -t 120`
 
 4. **Dump app stats** (on server or client process):
@@ -63,6 +64,17 @@ sudo tc qdisc del dev eth0 root
 - **Socket buffers:** `-B recv,snd` (e.g. `-B 524288,524288` for 512 KB).
 - **Pacing:** `-R rate_kbps` to cap send rate (e.g. `-R 80000` for 80 Mbps).
 - **Server queue:** `-W packets` (e.g. `-W 64`) to allow more buffered packets per client.
+
+## Why do I see 0 KB/s on some iperf3 streams?
+
+The tunnel is **one logical pipe** per client: the server has a single FIFO queue of packets to that client and sends **one packet per POLL reply**. With **8 parallel streams** (`-P 8`), all streams share that one queue. The kernel delivers segments from all TCP connections into the TUN; one connection often gets many segments in a row. So one stream’s packets can sit at the front of the queue and get most of the send slots, while others get almost none → you see one stream at ~40–50 Mbits/sec and several at 0 KB/s.
+
+**What to do:**
+
+- Use **fewer parallel streams**: `iperf3 -c 10.0.0.100 -t 30 -P 2` or `-P 4` for more even distribution and fewer 0 KB/s intervals.
+- Or a **single flow**: `iperf3 -c 10.0.0.100 -t 30` (no `-P`) for one stream and predictable throughput.
+
+Total bandwidth (SUM) is similar; with -P 2 or -P 4 the per-stream rates are less extreme.
 
 ## Interpreting stats
 

@@ -72,6 +72,7 @@ protected:
     uint32_t desiredIp;
 
     int maxPolls;
+    int numChannels; /* from CONNECTION_ACCEPT (multiplexing); 1 = single channel */
     int pollTimeoutNr;
 
     bool changeEchoId, changeEchoSeq;

@@ -51,6 +51,7 @@ Client::Client(int tunnelMtu, const string *deviceName, uint32_t serverIp,
     this->desiredIp = desiredIp;
     this->useHmac = true;
     this->maxPolls = maxPolls;
+    this->numChannels = 1;
     this->nextEchoId = Utility::rand();
     this->changeEchoId = changeEchoId;
     this->changeEchoSeq = changeEchoSeq;
@@ -141,7 +142,7 @@ bool Client::handleEchoData(const TunnelHeader &header, int dataLength, uint32_t
         case TunnelHeader::TYPE_CONNECTION_ACCEPT:
             if (state == STATE_CHALLENGE_RESPONSE_SENT)
             {
-                if (dataLength != sizeof(uint32_t))
+                if (dataLength != sizeof(uint32_t) && dataLength != 5)
                 {
                     throw Exception("invalid ip received");
                     return true;
@@ -149,7 +150,12 @@ bool Client::handleEchoData(const TunnelHeader &header, int dataLength, uint32_t
 
                 syslog(LOG_INFO, "connection established");
 
-                uint32_t ip = ntohl(*(uint32_t *)echoReceivePayloadBuffer());
+                const char *buf = echoReceivePayloadBuffer();
+                uint32_t ip = ntohl(*(const uint32_t *)buf);
+                if (dataLength >= 5)
+                    numChannels = (unsigned char)buf[4];
+                if (numChannels < 1)
+                    numChannels = 1;
                 if (ip != clientIp)
                 {
                     if (privilegesDropped)
@@ -213,7 +219,8 @@ void Client::startPolling()
     }
     else
     {
-        for (int i = 0; i < maxPolls; i++)
+        int n = maxPolls * (numChannels > 0 ? numChannels : 1);
+        for (int i = 0; i < n; i++)
             sendEchoToServer(TunnelHeader::TYPE_POLL, 0);
         setTimeout(POLL_INTERVAL);
     }

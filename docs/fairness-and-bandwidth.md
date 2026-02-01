@@ -27,13 +27,22 @@ There is **one FIFO queue per client**. All flows (e.g. 8 iperf3 streams) share 
 
 ## Do QUIC, KCP, multiplexing help?
 
-- **QUIC / KCP** – These are **transport** protocols. They run **over** the tunnel (your users’ traffic: e.g. browser QUIC to a server). Hans tunnels IP; it doesn’t replace TCP with QUIC inside the tunnel. So:
-  - **QUIC/KCP over the VPN:** Can help with loss recovery and multi-stream behavior for that traffic; they don’t increase the tunnel’s raw capacity.
-  - **QUIC/KCP inside hans:** Would mean redesigning the tunnel to use UDP and QUIC/KCP instead of ICMP; that’s a different project.
+- **QUIC / KCP** – These are **transport** protocols. They run **over** the tunnel (your users’ traffic). Hans tunnels IP; it doesn’t replace TCP with QUIC inside the tunnel. So QUIC/KCP over the VPN can help with loss recovery and multi-stream behavior for that traffic; they don’t increase the tunnel’s raw capacity. See [Borrowing from QUIC/KCP](#borrowing-from-quickcp) below for using their *ideas* inside the tunnel.
 
-- **Multiplexing** – **Yes.** Multiple logical “channels” (e.g. several POLL/reply streams, each with its own in-flight window) multiply effective in-flight packets and can get you much closer to 1.6 Gbit/s. Each channel can also be assigned to a flow or user for fairness. See [docs/multiplexing.md](multiplexing.md). Full implementation is future work; the design and config stub (`NUM_CHANNELS`) are in place.
+- **Multiplexing** – **Yes, implemented.** Multiple logical “channels” (POLL/reply streams) multiply in-flight packets and throughput. Default **NUM_CHANNELS=4**; the server assigns POLLs to channels by `id % NUM_CHANNELS` and sends round-robin. The client sends **maxPolls × num_channels** POLLs (num_channels in CONNECTION_ACCEPT). See [docs/multiplexing.md](multiplexing.md).
 
 - **Per-flow fairness** – Implemented: round-robin across flow queues so multiple streams/users get more equal shares (see below).
+
+## Borrowing from QUIC/KCP
+
+We can adopt the **infrastructure and logic** of QUIC/KCP in our ICMP tunnel without running QUIC/KCP as the transport:
+
+- **Multiplexing** – Multiple logical streams/channels over one “connection” (like QUIC streams). **Done:** NUM_CHANNELS and per-channel POLL queues; client sends more POLLs when server advertises more channels.
+- **Fast retransmit / NACK** – Detect loss and retransmit without waiting for TCP RTO. **Stub:** TYPE_DATA_SEQ and TYPE_NACK in the protocol; see [docs/sequence.md](sequence.md). Full implementation would track per-packet sequence and NACK from the receiver.
+- **Congestion control** – Adjust send rate from loss/RTT (e.g. AIMD or BBR-like). **Stub:** [src/congestion.h](src/congestion.h); not yet wired into the send path. Would drive pacing (-R) or per-channel rate.
+- **Connection ID** – QUIC’s connection ID for migration; less relevant for a fixed client↔server tunnel.
+
+So: we don’t run QUIC/KCP inside hans, but we can (and do) use **multiplexing**; **sequence/NACK** and **congestion control** are the next logical steps if you want QUIC/KCP-style behavior on top of ICMP.
 
 ## Per-flow fairness
 
@@ -52,6 +61,8 @@ Config: `HANS_NUM_FLOW_QUEUES` in [src/config.h](src/config.h) (default 16). Set
 
 1. **Tuning (now)** – Increase `-w` and `-W` in Compose or CLI for more in-flight packets and higher throughput. See [docs/docker.md](docker.md) and [docs/benchmark.md](benchmark.md).
 2. **Per-flow fairness (done)** – Round-robin across flow queues for fairer multi-stream / multi-user behavior.
-3. **Multiplexing (future)** – Multiple channels (e.g. 4–8) with separate POLL/reply streams to scale toward 1.6 Gbit/s and better multi-user capacity. See [docs/multiplexing.md](multiplexing.md).
+3. **Multiplexing (done)** – NUM_CHANNELS (default 4), per-channel POLL queues, client sends maxPolls×num_channels POLLs. Scale toward 1.6 Gbit/s with higher `-w` and NUM_CHANNELS=4 or 8. See [docs/multiplexing.md](multiplexing.md).
+4. **Sequence / NACK (stub)** – Per-packet sequence and NACK-based retransmit; see [docs/sequence.md](sequence.md).
+5. **Congestion control (stub)** – Wire [src/congestion.h](src/congestion.h) into send path for QUIC/KCP-style rate adaptation.
 
-For a **VPN with many users**, fairness and bandwidth both matter: use the current per-flow fairness and higher `-w`/`-W`; when you need more than ~100–200 Mbits/sec per client, multiplexing is the next step.
+For a **VPN with many users**, use per-flow fairness, multiplexing (NUM_CHANNELS=4), and higher `-w`/`-W` for both fairness and bandwidth.

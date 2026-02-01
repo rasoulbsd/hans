@@ -23,6 +23,10 @@
 #include "utility.h"
 #include "hmac.h"
 
+#ifndef NUM_CHANNELS
+#define NUM_CHANNELS 1
+#endif
+
 #include <string.h>
 #include <arpa/inet.h>
 #include <syslog.h>
@@ -124,6 +128,8 @@ void Server::handleUnknownClient(const TunnelHeader &header, int dataLength, uin
         clientList.push_front(client);
         clientList.front().pendingByFlow.resize(HANS_NUM_FLOW_QUEUES);
         clientList.front().lastSentFlow = 0;
+        clientList.front().pollIdsByChannel.resize(NUM_CHANNELS > 0 ? NUM_CHANNELS : 1);
+        clientList.front().nextChannelToSend = 0;
         clientRealIpMap[realIp] = clientList.begin();
         clientTunnelIpMap[client.tunnelIp] = clientList.begin();
     }
@@ -183,6 +189,8 @@ void Server::handleUnknownClient6(const TunnelHeader &header, int dataLength, co
         clientList.push_front(client);
         clientList.front().pendingByFlow.resize(HANS_NUM_FLOW_QUEUES);
         clientList.front().lastSentFlow = 0;
+        clientList.front().pollIdsByChannel.resize(NUM_CHANNELS > 0 ? NUM_CHANNELS : 1);
+        clientList.front().nextChannelToSend = 0;
         clientRealIp6Map[realIp] = clientList.begin();
         clientTunnelIpMap[client.tunnelIp] = clientList.begin();
     }
@@ -254,10 +262,15 @@ void Server::checkChallenge(ClientData *client, int length)
         return;
     }
 
-    uint32_t *ip = (uint32_t *)echoSendPayloadBuffer();
-    *ip = htonl(client->tunnelIp);
-
-    sendEchoToClient(client, TunnelHeader::TYPE_CONNECTION_ACCEPT, sizeof(uint32_t));
+    char *buf = echoSendPayloadBuffer();
+    *(uint32_t *)buf = htonl(client->tunnelIp);
+    int acceptLen = sizeof(uint32_t);
+    if (NUM_CHANNELS > 1 && NUM_CHANNELS <= 255)
+    {
+        buf[4] = (char)NUM_CHANNELS;
+        acceptLen = 5;
+    }
+    sendEchoToClient(client, TunnelHeader::TYPE_CONNECTION_ACCEPT, acceptLen);
 
     client->state = ClientData::STATE_ESTABLISHED;
 
@@ -298,8 +311,9 @@ bool Server::handleEchoData(const TunnelHeader &header, int dataLength, uint32_t
                 return true;
             }
 
-            while (client->pollIds.size() > 1)
-                client->pollIds.pop();
+            for (size_t c = 0; c < client->pollIdsByChannel.size(); c++)
+                while (client->pollIdsByChannel[c].size() > 0)
+                    client->pollIdsByChannel[c].pop();
 
             syslog(LOG_DEBUG, "reconnecting %s", Utility::formatIp(realIp).data());
             sendReset(client);
@@ -362,8 +376,9 @@ bool Server::handleEchoData6(const TunnelHeader &header, int dataLength, const s
                 sendChallenge(client);
                 return true;
             }
-            while (client->pollIds.size() > 1)
-                client->pollIds.pop();
+            for (size_t c = 0; c < client->pollIdsByChannel.size(); c++)
+                while (client->pollIdsByChannel[c].size() > 0)
+                    client->pollIdsByChannel[c].pop();
             syslog(LOG_DEBUG, "reconnecting %s", Utility::formatIp6(realIp).data());
             sendReset(client);
             removeClient(client);
@@ -443,14 +458,54 @@ void Server::handleTunData(int dataLength, uint32_t, uint32_t destIp)
     sendEchoToClient(client, TunnelHeader::TYPE_DATA, dataLength);
 }
 
+bool Server::getNextPollFromChannels(ClientData *client, uint16_t &outId, uint16_t &outSeq)
+{
+    const int N = (int)client->pollIdsByChannel.size();
+    if (N <= 0)
+        return false;
+    for (int i = 0; i < N; i++)
+    {
+        int c = (client->nextChannelToSend + i) % N;
+        if (client->pollIdsByChannel[c].size() > 0)
+        {
+            ClientData::EchoId e = client->pollIdsByChannel[c].front();
+            client->pollIdsByChannel[c].pop();
+            client->nextChannelToSend = (c + 1) % N;
+            outId = e.id;
+            outSeq = e.seq;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Server::getNextPollPeek(ClientData *client, uint16_t &outId, uint16_t &outSeq)
+{
+    const int N = (int)client->pollIdsByChannel.size();
+    for (int c = 0; c < N; c++)
+    {
+        if (client->pollIdsByChannel[c].size() > 0)
+        {
+            outId = client->pollIdsByChannel[c].front().id;
+            outSeq = client->pollIdsByChannel[c].front().seq;
+            return true;
+        }
+    }
+    return false;
+}
+
 void Server::pollReceived(ClientData *client, uint16_t echoId, uint16_t echoSeq)
 {
     unsigned int maxSavedPolls = client->maxPolls != 0 ? client->maxPolls : 1;
+    const int numCh = (int)client->pollIdsByChannel.size();
+    if (numCh <= 0)
+        return;
+    int channel = (int)((unsigned int)echoId % (unsigned int)numCh);
 
-    client->pollIds.push(ClientData::EchoId(echoId, echoSeq));
-    if (client->pollIds.size() > maxSavedPolls)
-        client->pollIds.pop();
-    DEBUG_ONLY(cout << "poll -> " << client->pollIds.size() << endl);
+    client->pollIdsByChannel[channel].push(ClientData::EchoId(echoId, echoSeq));
+    if (client->pollIdsByChannel[channel].size() > maxSavedPolls)
+        client->pollIdsByChannel[channel].pop();
+    DEBUG_ONLY(cout << "poll -> channel " << channel << endl);
 
     const int N = (int)client->pendingByFlow.size();
     if (N > 0)
@@ -476,31 +531,32 @@ void Server::pollReceived(ClientData *client, uint16_t echoId, uint16_t echoSeq)
 
 void Server::sendEchoToClient(ClientData *client, TunnelHeader::Type type, int dataLength)
 {
+    uint16_t outId = 0, outSeq = 0;
     if (client->maxPolls == 0)
     {
-        if (client->isV6)
+        if (getNextPollPeek(client, outId, outSeq))
         {
-            memcpy(echoSendPayloadBuffer6() - sizeof(TunnelHeader), echoSendPayloadBuffer() - sizeof(TunnelHeader), dataLength + sizeof(TunnelHeader));
-            sendEcho6(magic, type, dataLength, client->realIp6, true, client->pollIds.front().id, client->pollIds.front().seq);
+            if (client->isV6)
+            {
+                memcpy(echoSendPayloadBuffer6() - sizeof(TunnelHeader), echoSendPayloadBuffer() - sizeof(TunnelHeader), dataLength + sizeof(TunnelHeader));
+                sendEcho6(magic, type, dataLength, client->realIp6, true, outId, outSeq);
+            }
+            else
+                sendEcho(magic, type, dataLength, client->realIp, true, outId, outSeq);
         }
-        else
-            sendEcho(magic, type, dataLength, client->realIp, true, client->pollIds.front().id, client->pollIds.front().seq);
         return;
     }
 
-    if (client->pollIds.size() != 0)
+    if (getNextPollFromChannels(client, outId, outSeq))
     {
-        ClientData::EchoId echoId = client->pollIds.front();
-        client->pollIds.pop();
-
-        DEBUG_ONLY(cout << "sending -> " << client->pollIds.size() << endl);
+        DEBUG_ONLY(cout << "sending (channel round-robin)" << endl);
         if (client->isV6)
         {
             memcpy(echoSendPayloadBuffer6() - sizeof(TunnelHeader), echoSendPayloadBuffer() - sizeof(TunnelHeader), dataLength + sizeof(TunnelHeader));
-            sendEcho6(magic, type, dataLength, client->realIp6, true, echoId.id, echoId.seq);
+            sendEcho6(magic, type, dataLength, client->realIp6, true, outId, outSeq);
         }
         else
-            sendEcho(magic, type, dataLength, client->realIp, true, echoId.id, echoId.seq);
+            sendEcho(magic, type, dataLength, client->realIp, true, outId, outSeq);
         return;
     }
 

@@ -89,7 +89,9 @@ protected:
         int lastSentFlow;
 
         int maxPolls;
-        std::queue<EchoId> pollIds;
+        /* Per-channel POLL queues for multiplexing; size = NUM_CHANNELS. Channel = echoId % NUM_CHANNELS. */
+        std::vector<std::queue<EchoId> > pollIdsByChannel;
+        int nextChannelToSend;
         Time lastActivity;
 
         State state;
@@ -127,6 +129,9 @@ protected:
     void sendEchoToClient(ClientData *client, TunnelHeader::Type type, int dataLength);
 
     void pollReceived(ClientData *client, uint16_t echoId, uint16_t echoSeq);
+
+    bool getNextPollFromChannels(ClientData *client, uint16_t &outId, uint16_t &outSeq);
+    bool getNextPollPeek(ClientData *client, uint16_t &outId, uint16_t &outSeq);
 
     uint32_t reserveTunnelIp(uint32_t desiredIp);
     void releaseTunnelIp(uint32_t tunnelIp);

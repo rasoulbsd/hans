@@ -171,4 +171,5 @@ Summary of additions and edits; see [CHANGES](CHANGES) for details.
 - **Docker:** Dockerfile and docker-compose; run server and client separately; see [docs/docker.md](docs/docker.md).
 - **Auth:** HMAC-SHA256 (version 2) with legacy SHA1 support.
 - **MTU:** `-m mtu`; [docs/mtu.md](docs/mtu.md).
-- **Stubs/docs:** Sequence/retransmit ([docs/sequence.md](docs/sequence.md)), multiplexing ([docs/multiplexing.md](docs/multiplexing.md)), congestion ([src/congestion.h](src/congestion.h)).
+- **Multiplexing:** NUM_CHANNELS (default 4) with per-channel POLL queues; client sends maxPolls×num_channels POLLs for higher in-flight capacity and throughput. See [docs/multiplexing.md](docs/multiplexing.md).
+- **Stubs/docs:** Sequence/retransmit ([docs/sequence.md](docs/sequence.md)), congestion ([src/congestion.h](src/congestion.h)).

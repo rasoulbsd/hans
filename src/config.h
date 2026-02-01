@@ -30,8 +30,8 @@
 #define NUM_CHANNELS 1
 
 /* ICMP recv batch: 1 = original behavior, fair with multiple flows; larger = more throughput but unfair (0 KB/s on some iperf3 streams) */
-#ifndef RECV_BATCH_MAX
-#define RECV_BATCH_MAX 1
+#ifndef HANS_RECV_BATCH_MAX
+#define HANS_RECV_BATCH_MAX 1
 #endif
 
 // #define DEBUG_ONLY(a) a

@@ -42,6 +42,5 @@ services:
       - HANS_SERVER=${HANS_SERVER:-127.0.0.1}
       - HANS_PASSPHRASE=${HANS_PASSPHRASE:-passphrase}
       - HANS_NETWORK=${HANS_NETWORK:-10.0.0.0}
-    depends_on:
-      - hans-server
+    # No depends_on: server and client run on different hosts (different VPS)
     restart: "no"

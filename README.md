@@ -90,6 +90,8 @@ hans -c server.example.com -6 -p mypass -f -d tun1
 - **IPv4 only:** Start server and client without `-6`. Ping over the tunnel (e.g. client gets 10.0.0.100).
 - **IPv6 only:** Start server; start client with `-6 -c <server_ipv6>`. Ping over the tunnel the same way. See [docs/docker.md](docs/docker.md#testing-ipv4-vs-ipv6) for Docker IPv6 examples.
 
+For **VPN / many users**: fairness and bandwidth are both important. See [docs/fairness-and-bandwidth.md](docs/fairness-and-bandwidth.md) for why throughput is limited (~137 Mbits/sec vs 1.6 Gbit/s), per-flow fairness (round-robin), tuning (`-w`/`-W`), and multiplexing/QUIC/KCP.
+
 ## Performance tuning on Ubuntu
 
 - **Socket buffers:** Use `-B recv,snd` (bytes). Default is 256 KiB each. For higher throughput (e.g. 80+ Mbps), try `-B 524288,524288` (512 KiB). If you use larger values, raise system limits first:

@@ -36,6 +36,23 @@ using std::endl;
 
 const Worker::TunnelHeader::Magic Server::magic("hans");
 
+/* Hash inner IP packet (5-tuple for TCP/UDP, else 3-tuple) to flow index 0..HANS_NUM_FLOW_QUEUES-1. */
+static int getFlowIdFromPayload(const char *data, int dataLength)
+{
+    if (HANS_NUM_FLOW_QUEUES <= 1 || dataLength < 20)
+        return 0;
+    const unsigned char *p = (const unsigned char *)data;
+    unsigned int hash = (unsigned int)p[12] << 24 | (unsigned int)p[13] << 16 | (unsigned int)p[14] << 8 | p[15];
+    hash += ((unsigned int)p[16] << 24 | (unsigned int)p[17] << 16 | (unsigned int)p[18] << 8 | p[19]) * 31u;
+    hash += (unsigned int)p[9] * 31u;
+    if (dataLength >= 24 && (p[9] == 6 || p[9] == 17))
+    {
+        hash += ((unsigned int)p[20] << 8 | p[21]) * 31u;
+        hash += ((unsigned int)p[22] << 8 | p[23]) * 31u;
+    }
+    return (int)(hash % (unsigned int)HANS_NUM_FLOW_QUEUES);
+}
+
 Server::Server(int tunnelMtu, const string *deviceName, const string &passphrase,
                uint32_t network, bool answerEcho, uid_t uid, gid_t gid, int pollTimeout,
                int maxBufferedPackets, int recvBufSize, int sndBufSize, int rateKbps)
@@ -105,6 +122,8 @@ void Server::handleUnknownClient(const TunnelHeader &header, int dataLength, uin
 
         // add client to list
         clientList.push_front(client);
+        clientList.front().pendingByFlow.resize(HANS_NUM_FLOW_QUEUES);
+        clientList.front().lastSentFlow = 0;
         clientRealIpMap[realIp] = clientList.begin();
         clientTunnelIpMap[client.tunnelIp] = clientList.begin();
     }
@@ -162,6 +181,8 @@ void Server::handleUnknownClient6(const TunnelHeader &header, int dataLength, co
         sendChallenge(&client);
 
         clientList.push_front(client);
+        clientList.front().pendingByFlow.resize(HANS_NUM_FLOW_QUEUES);
+        clientList.front().lastSentFlow = 0;
         clientRealIp6Map[realIp] = clientList.begin();
         clientTunnelIpMap[client.tunnelIp] = clientList.begin();
     }
@@ -431,14 +452,23 @@ void Server::pollReceived(ClientData *client, uint16_t echoId, uint16_t echoSeq)
         client->pollIds.pop();
     DEBUG_ONLY(cout << "poll -> " << client->pollIds.size() << endl);
 
-    if (client->pendingPackets.size() > 0)
+    const int N = (int)client->pendingByFlow.size();
+    if (N > 0)
     {
-        Packet &packet = client->pendingPackets.front();
-        memcpy(echoSendPayloadBuffer(), &packet.data[0], packet.data.size());
-        client->pendingPackets.pop();
-
-        DEBUG_ONLY(cout << "pending packet: " << packet.data.size() << " bytes\n");
-        sendEchoToClient(client, packet.type, packet.data.size());
+        for (int i = 0; i < N; i++)
+        {
+            int q = (client->lastSentFlow + 1 + i) % N;
+            if (client->pendingByFlow[q].size() > 0)
+            {
+                Packet &packet = client->pendingByFlow[q].front();
+                memcpy(echoSendPayloadBuffer(), &packet.data[0], packet.data.size());
+                client->pendingByFlow[q].pop();
+                client->lastSentFlow = q;
+                DEBUG_ONLY(cout << "pending packet: " << packet.data.size() << " bytes (flow " << q << ")\n");
+                sendEchoToClient(client, packet.type, packet.data.size());
+                break;
+            }
+        }
     }
 
     client->lastActivity = now;
@@ -474,18 +504,27 @@ void Server::sendEchoToClient(ClientData *client, TunnelHeader::Type type, int d
         return;
     }
 
-    if (client->pendingPackets.size() >= (unsigned int)maxBufferedPackets)
+    const int N = (int)client->pendingByFlow.size();
+    if (N <= 0)
+        return;
+    int flowId = (type == TunnelHeader::TYPE_DATA && N > 1)
+        ? getFlowIdFromPayload(echoReceivePayloadBuffer(), dataLength) : 0;
+    int maxPerFlow = (maxBufferedPackets > 0) ? (maxBufferedPackets + N - 1) / N : maxBufferedPackets;
+    if (maxPerFlow < 1)
+        maxPerFlow = 1;
+
+    if ((int)client->pendingByFlow[flowId].size() >= maxPerFlow)
     {
-        client->pendingPackets.pop();
+        client->pendingByFlow[flowId].pop();
         stats.incDroppedQueueFull();
-        syslog(LOG_WARNING, "packet to %s dropped (queue full)",
-               Utility::formatIp(client->tunnelIp).data());
+        syslog(LOG_WARNING, "packet to %s dropped (queue full, flow %d)",
+               Utility::formatIp(client->tunnelIp).data(), flowId);
     }
 
-    DEBUG_ONLY(cout << "packet queued: " << dataLength << " bytes\n");
+    DEBUG_ONLY(cout << "packet queued: " << dataLength << " bytes (flow " << flowId << ")\n");
 
-    client->pendingPackets.push(Packet());
-    Packet &packet = client->pendingPackets.back();
+    client->pendingByFlow[flowId].push(Packet());
+    Packet &packet = client->pendingByFlow[flowId].back();
     packet.type = type;
     packet.data.resize(dataLength);
     memcpy(&packet.data[0], echoReceivePayloadBuffer(), dataLength);

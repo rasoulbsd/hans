@@ -84,7 +84,9 @@ protected:
         bool isV6;
         uint32_t tunnelIp;
 
-        std::queue<Packet> pendingPackets;
+        /* Per-flow queues (round-robin send for fairness); size = HANS_NUM_FLOW_QUEUES. If 1, single FIFO. */
+        std::vector<std::queue<Packet> > pendingByFlow;
+        int lastSentFlow;
 
         int maxPolls;
         std::queue<EchoId> pollIds;

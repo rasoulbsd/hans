@@ -34,5 +34,10 @@
 #define HANS_RECV_BATCH_MAX 1
 #endif
 
+/* Per-flow queues for fairness: number of flow queues per client (round-robin send). 1 = single FIFO (original). */
+#ifndef HANS_NUM_FLOW_QUEUES
+#define HANS_NUM_FLOW_QUEUES 16
+#endif
+
 // #define DEBUG_ONLY(a) a
 #define DEBUG_ONLY(a)

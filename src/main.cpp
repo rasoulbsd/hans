@@ -319,7 +319,14 @@ int main(int argc, char *argv[])
         if (!foreground)
         {
             syslog(LOG_INFO, "detaching from terminal");
+#if defined(__APPLE__) || defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
             daemon(0, 0);
+#if defined(__APPLE__) || defined(__clang__)
+#pragma clang diagnostic pop
+#endif
         }
 
         worker->run();

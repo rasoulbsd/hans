@@ -19,6 +19,7 @@
 
 #include "stats.h"
 
+#include <inttypes.h>
 #include <syslog.h>
 
 Stats::Stats()
@@ -57,11 +58,11 @@ void Stats::incDroppedQueueFull()
 
 void Stats::dumpToSyslog() const
 {
-    syslog(LOG_INFO, "stats: packets_sent=%llu packets_received=%llu bytes_sent=%llu bytes_received=%llu dropped_send_fail=%llu dropped_queue_full=%llu",
-           (unsigned long long)packets_sent,
-           (unsigned long long)packets_received,
-           (unsigned long long)bytes_sent,
-           (unsigned long long)bytes_received,
-           (unsigned long long)packets_dropped_send_fail,
-           (unsigned long long)packets_dropped_queue_full);
+    syslog(LOG_INFO, "stats: packets_sent=%" PRIu64 " packets_received=%" PRIu64 " bytes_sent=%" PRIu64 " bytes_received=%" PRIu64 " dropped_send_fail=%" PRIu64 " dropped_queue_full=%" PRIu64,
+           packets_sent,
+           packets_received,
+           bytes_sent,
+           bytes_received,
+           packets_dropped_send_fail,
+           packets_dropped_queue_full);
 }

@@ -26,8 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install OpenSSL
+        run: brew install openssl
+
       - name: Build
         run: |
+          export CPPFLAGS="-I$(brew --prefix openssl)/include"
+          export LDFLAGS="-L$(brew --prefix openssl)/lib"
           make clean || true
           make
 

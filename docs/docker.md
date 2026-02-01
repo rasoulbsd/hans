@@ -34,6 +34,19 @@ docker compose build
 docker build -t hans:latest .
 ```
 
+## Throughput (iperf3 / bandwidth)
+
+Compose is configured for better throughput: **server** uses `-B 524288,524288` (512 KiB socket buffers) and `-W 64` (server queue); **client** uses `-B 524288,524288` and `-w 20` (polls in advance). That should reduce retransmissions and improve bitrate compared to defaults.
+
+On each **VPS host** (before or after starting containers), raise kernel socket limits so the larger buffers take effect:
+
+```bash
+sudo sysctl -w net.core.rmem_max=1048576
+sudo sysctl -w net.core.wmem_max=1048576
+```
+
+To make these persistent: add the same lines to `/etc/sysctl.conf` or a file under `/etc/sysctl.d/`. See [docs/benchmark.md](benchmark.md) for iperf3 test steps and tuning.
+
 ## Running server and client separately
 
 You can run **only the server**, **only the client**, or **both** on different hosts.

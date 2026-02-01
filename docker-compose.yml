@@ -11,8 +11,8 @@ services:
     devices:
       - /dev/net/tun
     network_mode: host
-    # Server: -s network -p passphrase -f (foreground)
-    command: ["-s", "${HANS_NETWORK:-10.0.0.0}", "-p", "${HANS_PASSPHRASE:-passphrase}", "-f", "-d", "tun0"]
+    # Server: -s network -p passphrase -f; -B/-W for throughput (see docs/benchmark.md)
+    command: ["-s", "${HANS_NETWORK:-10.0.0.0}", "-p", "${HANS_PASSPHRASE:-passphrase}", "-f", "-d", "tun0", "-B", "524288,524288", "-W", "64"]
     environment:
       - HANS_PASSPHRASE=${HANS_PASSPHRASE:-passphrase}
       - HANS_NETWORK=${HANS_NETWORK:-10.0.0.0}
@@ -36,8 +36,8 @@ services:
     devices:
       - /dev/net/tun
     network_mode: host
-    # Client: -c server -p passphrase -f; set HANS_SERVER to server's IP
-    command: ["-c", "${HANS_SERVER:-127.0.0.1}", "-p", "${HANS_PASSPHRASE:-passphrase}", "-f", "-d", "tun1"]
+    # Client: -c server -p passphrase -f; -B/-w for throughput (see docs/benchmark.md)
+    command: ["-c", "${HANS_SERVER:-127.0.0.1}", "-p", "${HANS_PASSPHRASE:-passphrase}", "-f", "-d", "tun1", "-B", "524288,524288", "-w", "20"]
     environment:
       - HANS_SERVER=${HANS_SERVER:-127.0.0.1}
       - HANS_PASSPHRASE=${HANS_PASSPHRASE:-passphrase}

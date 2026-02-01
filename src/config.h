@@ -29,7 +29,7 @@
 
 /* Multiplexing: number of logical channels (POLL/reply streams). 1 = original; 4 or 8 = more in-flight, higher throughput. */
 #ifndef NUM_CHANNELS
-#define NUM_CHANNELS 4
+#define NUM_CHANNELS 8
 #endif
 
 /* ICMP recv batch: 1 = original behavior, fair with multiple flows; larger = more throughput but unfair (0 KB/s on some iperf3 streams) */

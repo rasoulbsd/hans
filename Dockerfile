@@ -1,9 +1,10 @@
 # Build stage
-FROM ubuntu:22.04 AS build
+FROM debian:bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     make \
     libssl-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -13,11 +14,12 @@ RUN make clean 2>/dev/null || true
 RUN make
 
 # Runtime stage
-FROM ubuntu:22.04
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     net-tools \
     iputils-ping \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/hans /usr/local/bin/hans
